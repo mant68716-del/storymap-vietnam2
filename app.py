@@ -254,3 +254,5 @@ if __name__=='__main__':
     # 0.0.0.0 lets phones on the same Wi-Fi open the app.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=os.environ.get('FLASK_DEBUG','false').lower() == 'true')
 
+# Trigger redeploy for troubleshooting
+
