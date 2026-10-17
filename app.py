@@ -30,22 +30,94 @@ CENTERS = {
 'Hà Nội':(21.03,105.85),'Hà Giang':(22.82,104.98),'Cao Bằng':(22.67,106.25),'Bắc Kạn':(22.15,105.83),'Tuyên Quang':(21.82,105.22),'Lào Cai':(22.34,104.15),'Điện Biên':(21.39,103.02),'Lai Châu':(22.39,103.47),'Sơn La':(21.33,103.91),'Yên Bái':(21.72,104.91),'Hòa Bình':(20.81,105.34),'Thái Nguyên':(21.59,105.84),'Lạng Sơn':(21.85,106.76),'Quảng Ninh':(21.01,107.29),'Bắc Giang':(21.27,106.19),'Phú Thọ':(21.32,105.23),'Vĩnh Phúc':(21.31,105.60),'Bắc Ninh':(21.19,106.07),'Hải Dương':(20.94,106.33),'Hải Phòng':(20.84,106.69),'Hưng Yên':(20.65,106.05),'Thái Bình':(20.45,106.34),'Hà Nam':(20.54,105.91),'Nam Định':(20.42,106.17),'Ninh Bình':(20.25,105.97),'Thanh Hóa':(19.81,105.78),'Nghệ An':(19.24,104.92),'Hà Tĩnh':(18.36,105.90),'Quảng Bình':(17.48,106.62),'Quảng Trị':(16.75,107.19),'Thừa Thiên Huế':(16.47,107.59),'Đà Nẵng':(16.05,108.20),'Quảng Nam':(15.57,108.47),'Quảng Ngãi':(15.12,108.80),'Bình Định':(13.78,109.22),'Phú Yên':(13.09,109.31),'Khánh Hòa':(12.25,109.19),'Ninh Thuận':(11.57,108.99),'Bình Thuận':(10.93,108.10),'Kon Tum':(14.35,108.00),'Gia Lai':(13.98,108.00),'Đắk Lắk':(12.67,108.04),'Đắk Nông':(12.00,107.69),'Lâm Đồng':(11.57,108.00),'Bình Phước':(11.75,106.88),'Tây Ninh':(11.31,106.10),'Bình Dương':(11.17,106.65),'Đồng Nai':(11.07,107.17),'Bà Rịa - Vũng Tàu':(10.58,107.24),'TP. Hồ Chí Minh':(10.78,106.70),'Long An':(10.53,106.41),'Tiền Giang':(10.36,106.36),'Bến Tre':(10.24,106.38),'Trà Vinh':(9.95,106.34),'Vĩnh Long':(10.25,105.97),'Đồng Tháp':(10.59,105.64),'An Giang':(10.52,105.13),'Kiên Giang':(9.78,105.08),'Cần Thơ':(10.03,105.78),'Hậu Giang':(9.78,105.47),'Sóc Trăng':(9.60,105.98),'Bạc Liêu':(9.29,105.72),'Cà Mau':(9.18,105.15)}
 ISLANDS=[('Hoàng Sa',16.50,111.75),('Trường Sa',10.50,114.00),('Phú Quốc',10.23,103.97),('Côn Đảo',8.68,106.60),('Cát Bà',20.73,107.05)]
 
+
+# Dùng PostgreSQL trên Render khi có DATABASE_URL; dùng SQLite khi chạy máy cá nhân.
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
+
+class PgCursor:
+    def __init__(self, cursor, lastrowid=None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+    def fetchone(self): return self._cursor.fetchone()
+    def fetchall(self): return self._cursor.fetchall()
+    def __iter__(self): return iter(self._cursor)
+    def __getattr__(self, name): return getattr(self._cursor, name)
+
+class PgConnection:
+    def __init__(self, conn): self._conn = conn
+    def execute(self, sql, params=()):
+        import re
+        sql = sql.strip()
+        is_ignore = sql.upper().startswith('INSERT OR IGNORE INTO ')
+        is_replace_visits = sql.upper().startswith('INSERT OR REPLACE INTO VISITS ')
+        if is_ignore:
+            sql = re.sub(r'^INSERT OR IGNORE INTO ', 'INSERT INTO ', sql, flags=re.I).rstrip(';')
+            sql += ' ON CONFLICT DO NOTHING'
+        elif is_replace_visits:
+            sql = re.sub(r'^INSERT OR REPLACE INTO ', 'INSERT INTO ', sql, flags=re.I).rstrip(';')
+            sql += ' ON CONFLICT (user_id, province_code) DO UPDATE SET visited_at = EXCLUDED.visited_at'
+        else:
+            sql = sql.rstrip(';')
+        is_id_insert = bool(re.match(r'INSERT INTO (users|stories)\b', sql, flags=re.I))
+        if is_id_insert:
+            sql += ' RETURNING id'
+        sql = sql.replace('?', '%s')
+        cur = self._conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(sql, params)
+        lastrowid = None
+        if is_id_insert:
+            row = cur.fetchone()
+            lastrowid = row['id'] if row else None
+        return PgCursor(cur, lastrowid)
+    def executescript(self, script):
+        for statement in script.split(';'):
+            if statement.strip(): self.execute(statement)
+    def commit(self): self._conn.commit()
+    def close(self): self._conn.close()
+
 def db():
-    c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
+    if DATABASE_URL:
+        if psycopg2 is None:
+            raise RuntimeError("Thiếu thư viện psycopg2-binary. Hãy thêm vào requirements.txt.")
+        return PgConnection(psycopg2.connect(DATABASE_URL))
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    c.execute('PRAGMA foreign_keys=ON')
+    return c
 
 def init_db():
-    c=db(); c.executescript('''
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,bio TEXT DEFAULT '',avatar TEXT DEFAULT '',created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS provinces(code TEXT PRIMARY KEY,name TEXT NOT NULL,map_version TEXT NOT NULL DEFAULT '63-pre-2025');
-    CREATE TABLE IF NOT EXISTS stories(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,province_code TEXT NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,visit_date TEXT,location TEXT DEFAULT '',latitude REAL,longitude REAL,image_filename TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
-    CREATE TABLE IF NOT EXISTS media(id INTEGER PRIMARY KEY AUTOINCREMENT,story_id INTEGER NOT NULL,filename TEXT NOT NULL,media_type TEXT NOT NULL,original_name TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS visits(user_id INTEGER NOT NULL,province_code TEXT NOT NULL,visited_at TEXT NOT NULL,PRIMARY KEY(user_id,province_code),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
-    CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,province_code TEXT,title TEXT NOT NULL,note TEXT DEFAULT '',due_date TEXT,status TEXT NOT NULL DEFAULT 'todo',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
-    ''')
-    for code,name in PROVINCES: c.execute('INSERT OR IGNORE INTO provinces(code,name,map_version) VALUES(?,?,?)',(code,name,'63-pre-2025'))
-    c.commit(); c.close()
+    c = db()
+    if DATABASE_URL:
+        c.executescript('''
+        CREATE TABLE IF NOT EXISTS users(id SERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,bio TEXT DEFAULT '',avatar TEXT DEFAULT '',created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS provinces(code TEXT PRIMARY KEY,name TEXT NOT NULL,map_version TEXT NOT NULL DEFAULT '63-pre-2025');
+        CREATE TABLE IF NOT EXISTS stories(id SERIAL PRIMARY KEY,user_id INTEGER NOT NULL,province_code TEXT NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,visit_date TEXT,location TEXT DEFAULT '',latitude DOUBLE PRECISION,longitude DOUBLE PRECISION,image_filename TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        CREATE TABLE IF NOT EXISTS media(id SERIAL PRIMARY KEY,story_id INTEGER NOT NULL,filename TEXT NOT NULL,media_type TEXT NOT NULL,original_name TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS visits(user_id INTEGER NOT NULL,province_code TEXT NOT NULL,visited_at TEXT NOT NULL,PRIMARY KEY(user_id,province_code),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        CREATE TABLE IF NOT EXISTS tasks(id SERIAL PRIMARY KEY,user_id INTEGER NOT NULL,province_code TEXT,title TEXT NOT NULL,note TEXT DEFAULT '',due_date TEXT,status TEXT NOT NULL DEFAULT 'todo',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        ''')
+        for code, name in PROVINCES:
+            c.execute('INSERT INTO provinces(code,name,map_version) VALUES(?,?,?) ON CONFLICT (code) DO NOTHING', (code,name,'63-pre-2025'))
+    else:
+        c.executescript('''
+        CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,bio TEXT DEFAULT '',avatar TEXT DEFAULT '',created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS provinces(code TEXT PRIMARY KEY,name TEXT NOT NULL,map_version TEXT NOT NULL DEFAULT '63-pre-2025');
+        CREATE TABLE IF NOT EXISTS stories(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,province_code TEXT NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,visit_date TEXT,location TEXT DEFAULT '',latitude REAL,longitude REAL,image_filename TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        CREATE TABLE IF NOT EXISTS media(id INTEGER PRIMARY KEY AUTOINCREMENT,story_id INTEGER NOT NULL,filename TEXT NOT NULL,media_type TEXT NOT NULL,original_name TEXT DEFAULT '',created_at TEXT NOT NULL,FOREIGN KEY(story_id) REFERENCES stories(id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS visits(user_id INTEGER NOT NULL,province_code TEXT NOT NULL,visited_at TEXT NOT NULL,PRIMARY KEY(user_id,province_code),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,province_code TEXT,title TEXT NOT NULL,note TEXT DEFAULT '',due_date TEXT,status TEXT NOT NULL DEFAULT 'todo',created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(province_code) REFERENCES provinces(code));
+        ''')
+        for code,name in PROVINCES:
+            c.execute('INSERT OR IGNORE INTO provinces(code,name,map_version) VALUES(?,?,?)',(code,name,'63-pre-2025'))
+    c.commit()
+    c.close()
 
-init_db()
 
 def csrf_token():
     if 'csrf' not in session: session['csrf']=secrets.token_urlsafe(32)
@@ -90,7 +162,7 @@ def register():
         c=db()
         try:
             cur=c.execute('INSERT INTO users(name,email,password_hash,created_at) VALUES(?,?,?,?)',(name,email,generate_password_hash(pw),datetime.utcnow().isoformat())); c.commit(); session.clear(); session['user_id']=cur.lastrowid; csrf_token(); return redirect(url_for('home'))
-        except sqlite3.IntegrityError: flash('Email đã được đăng ký.','danger')
+        except (sqlite3.IntegrityError, psycopg2.IntegrityError if psycopg2 else sqlite3.IntegrityError): flash('Email đã được đăng ký.','danger')
         finally: c.close()
     return render_template('auth.html',mode='register')
 
@@ -181,3 +253,4 @@ def delete_task(task_id):
 if __name__=='__main__':
     # 0.0.0.0 lets phones on the same Wi-Fi open the app.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=os.environ.get('FLASK_DEBUG','false').lower() == 'true')
+
