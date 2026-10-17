@@ -118,7 +118,10 @@ def init_db():
     c.commit()
     c.close()
 
-
+# Tạo các bảng khi ứng dụng khởi động
+init_db()
+ 
+    
 def csrf_token():
     if 'csrf' not in session: session['csrf']=secrets.token_urlsafe(32)
     return session['csrf']
