@@ -155,7 +155,15 @@ def home():
         uid=session['user_id']; visited=[r['province_code'] for r in c.execute('SELECT province_code FROM visits WHERE user_id=?',(uid,))]
         stories=c.execute('SELECT s.*,p.name province_name FROM stories s JOIN provinces p ON p.code=s.province_code WHERE s.user_id=? ORDER BY s.created_at DESC',(uid,)).fetchall()
         tasks=c.execute("SELECT t.*,p.name province_name FROM tasks t LEFT JOIN provinces p ON p.code=t.province_code WHERE t.user_id=? ORDER BY t.status,t.created_at DESC",(uid,)).fetchall()
-    c.close(); return render_template('index.html',provinces=PROVINCES,centers=CENTERS,visited=visited,stories=stories,tasks=tasks)
+        story_links = {}
+
+        for s in stories:  
+            code = s['province_code']
+            story_links.setdefault(code, []).append({
+                'id': s['id'],
+                'title': s['title']
+    })
+    c.close(); return render_template('index.html',provinces=PROVINCES,centers=CENTERS,visited=visited,stories=stories,tasks=tasks,story_links=story_links)
 
 @app.route('/register',methods=['GET','POST'])
 def register():
