@@ -54,8 +54,8 @@ class PgConnection:
     def execute(self, sql, params=()):
         import re
         sql = sql.strip()
-        is_ignore = sql.upper().startswith('INSERT OR IGNORE INTO ')
-        is_replace_visits = sql.upper().startswith('INSERT OR REPLACE INTO VISITS ')
+        is_ignore = bool(re.match(r'^INSERT\s+OR\s+IGNORE\s+INTO\b', sql, flags=re.I))
+        is_replace_visits = bool(re.match(r'^INSERT\s+OR\s+REPLACE\s+INTO\s+VISITS\b', sql, flags=re.I))
         if is_ignore:
             sql = re.sub(r'^INSERT OR IGNORE INTO ', 'INSERT INTO ', sql, flags=re.I).rstrip(';')
             sql += ' ON CONFLICT DO NOTHING'
